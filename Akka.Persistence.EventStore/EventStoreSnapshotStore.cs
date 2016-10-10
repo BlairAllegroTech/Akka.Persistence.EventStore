@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Linq;
-using System.Net;
 using System.Text;
 using System.Threading.Tasks;
 using Akka.Event;
@@ -9,12 +8,13 @@ using Akka.Persistence.Serialization;
 using Akka.Persistence.Snapshot;
 using Akka.Serialization;
 using EventStore.ClientAPI;
-using EventStore.ClientAPI.SystemData;
 using Newtonsoft.Json;
 using Akka.Persistence.EventStore;
 
 namespace EventStore.Persistence
 {
+    
+
     public class EventStoreSnapshotStore : SnapshotStore
     {
         private readonly Lazy<Task<IEventStoreConnection>> _connection;
@@ -85,7 +85,7 @@ namespace EventStore.Persistence
 
         private static string GetStreamName(string persistenceId)
         {
-            return string.Format("snapshot-{0}", persistenceId);
+            return string.Format("{0}-snapshot", persistenceId);
         }
 
         protected override async Task SaveAsync(SnapshotMetadata metadata, object snapshot)
@@ -98,14 +98,17 @@ namespace EventStore.Persistence
             await connection.AppendToStreamAsync(streamName, ExpectedVersion.Any, eventData);
         }
 
-        protected override void Saved(SnapshotMetadata metadata)
-        {}
+        protected override Task DeleteAsync(SnapshotMetadata metadata)
+        {
+            // We do not support deleting
+            return Task.Delay(0);
+        }
 
-        protected override void Delete(SnapshotMetadata metadata)
-        {}
-
-        protected override void Delete(string persistenceId, SnapshotSelectionCriteria criteria)
-        {}
+        protected override Task DeleteAsync(string persistenceId, SnapshotSelectionCriteria criteria)
+        {
+            // We do not support deleting
+            return Task.Delay(0);
+        }
 
         
         public class StreamMetadata
