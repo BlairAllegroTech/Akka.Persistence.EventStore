@@ -34,28 +34,28 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Akka, Version=1.1.2.29, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\Lib\Akka.dll</HintPath>
+      <HintPath>..\packages\Akka.1.1.2\lib\net45\Akka.dll</HintPath>
+      <Private>True</Private>
     </Reference>
     <Reference Include="Akka.Logger.NLog, Version=1.1.1.4, Culture=neutral, processorArchitecture=MSIL">
       <HintPath>..\packages\Akka.Logger.NLog.1.1.1\lib\net45\Akka.Logger.NLog.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="Akka.Persistence, Version=1.1.2.30, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\Lib\Akka.Persistence.dll</HintPath>
+      <HintPath>..\packages\Akka.Persistence.1.1.2.30-beta\lib\net45\Akka.Persistence.dll</HintPath>
+      <Private>True</Private>
     </Reference>
     <Reference Include="Akka.Persistence.TestKit, Version=1.1.2.30, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\Lib\Akka.Persistence.TestKit.dll</HintPath>
+      <HintPath>..\packages\Akka.Persistence.TestKit.1.1.2.30-beta\lib\net45\Akka.Persistence.TestKit.dll</HintPath>
+      <Private>True</Private>
     </Reference>
     <Reference Include="Akka.TestKit, Version=1.1.2.29, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\Lib\Akka.TestKit.dll</HintPath>
+      <HintPath>..\packages\Akka.TestKit.1.1.2\lib\net45\Akka.TestKit.dll</HintPath>
+      <Private>True</Private>
     </Reference>
     <Reference Include="Akka.TestKit.Xunit2, Version=1.1.2.29, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\Lib\Akka.TestKit.Xunit2.dll</HintPath>
+      <HintPath>..\packages\Akka.TestKit.Xunit2.1.1.2\lib\net45\Akka.TestKit.Xunit2.dll</HintPath>
+      <Private>True</Private>
     </Reference>
     <Reference Include="EventStore.ClientAPI, Version=3.9.0.0, Culture=neutral, processorArchitecture=MSIL">
       <HintPath>..\packages\EventStore.Client.3.9.0\lib\net40\EventStore.ClientAPI.dll</HintPath>
@@ -82,6 +82,7 @@
       <HintPath>..\packages\System.Collections.Immutable.1.2.0\lib\portable-net45+win8+wp8+wpa81\System.Collections.Immutable.dll</HintPath>
       <Private>True</Private>
     </Reference>
+    <Reference Include="System.Configuration" />
     <Reference Include="System.Core" />
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Data.DataSetExtensions" />
