@@ -2,7 +2,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace EventStore.Persistence
+namespace Akka.Persistence.EventStore
 {
     /// <summary>
     /// Helper methods for working with <see cref="Guid"/>.

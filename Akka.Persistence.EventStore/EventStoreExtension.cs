@@ -44,13 +44,23 @@ namespace Akka.Persistence.EventStore
         /// </summary>
         public readonly EventStoreSnapshotSettings EventStoreSnapshotSettings;
 
+        /// <summary>
+        /// Tag Jornals and streams with a tennant id so that tenant specific processing can be performed
+        /// like projections that just run on a tenants journal events
+        /// </summary>
+        public readonly string TenantIdentifier;
+
 
         public EventStorePersistenceExtension(ExtendedActorSystem system)
         {
             system.Settings.InjectTopLevelFallback(EventStorePersistence.DefaultConfiguration());
 
+            var persistence = system.Settings.Config.GetConfig("akka.persistence");
+            TenantIdentifier = persistence.GetString("tenant-identifier", string.Empty );
             EventStoreJournalSettings = new EventStoreJournalSettings(system.Settings.Config.GetConfig(EventStoreJournalSettings.ConfigPath));
             EventStoreSnapshotSettings = new EventStoreSnapshotSettings(system.Settings.Config.GetConfig(EventStoreSnapshotSettings.ConfigPath));
+
+            
         }
     }
 
