@@ -270,7 +270,7 @@ namespace Akka.Persistence.EventStore.Journal
             {
                 var tagged = (Tagged)message.Payload;
 
-                message.WithPayload(tagged.Payload);
+                //message.WithPayload(tagged.Payload);
 
                 jornalEntry.Payload = tagged.Payload;
                 if (tagged.Tags.Count != 0)
@@ -304,14 +304,18 @@ namespace Akka.Persistence.EventStore.Journal
         {
             // It would be good to make this method plugable.
             // Naming of streams is probably fairly important to most people
-            var id = persistenceId.Replace("-", "");
+
+
+            // var id = persistenceId.Replace("-", "");
+            // Persistence ids should use dashes spareingly, 
+            // e.g. Event store uses them as a sperator, to catagorise stream names into related groups
             if (string.IsNullOrEmpty(tenantId))
             {
-                return string.Format("journal-{0}", id);
+                return string.Format("journal-{0}", persistenceId);
             }
             else
             {
-                return string.Format("{1}_journal-{0}", id, tenantId);
+                return string.Format("{1}_journal-{0}", persistenceId, tenantId);
             }
         }
 
