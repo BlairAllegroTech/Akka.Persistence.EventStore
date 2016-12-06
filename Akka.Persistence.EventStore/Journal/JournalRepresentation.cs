@@ -8,17 +8,17 @@
     public class JournalRepresentation
     {
 
-        [JsonProperty("Id")]
-        public string Id { get; set; }
+        //[JsonProperty("Id")]
+        //public string Id { get; set; }
 
         [JsonProperty("PersistenceId")]
         public string PersistenceId { get; set; }
 
-        [JsonProperty("SequenceNr")]
+        [JsonProperty("SequenceNr"), JsonIgnore]
         public long SequenceNr { get; set; }
 
-        [JsonProperty("IsDeleted")]
-        public bool IsDeleted { get; set; }
+        //[JsonProperty("IsDeleted")]
+        //public bool IsDeleted { get; set; }
 
         [JsonProperty("Payload")]
         public object Payload { get; set; }
@@ -26,7 +26,7 @@
         [JsonProperty("Manifest")]
         public string Manifest { get; set; }
 
-        [JsonProperty("Tags", Required = Required.AllowNull)]
+        [JsonProperty("Tags", Required = Required.Default)]
         public string[] Tags { get; set; }
     }
 }

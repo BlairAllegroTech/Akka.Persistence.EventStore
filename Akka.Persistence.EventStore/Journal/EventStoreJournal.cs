@@ -5,10 +5,12 @@ using Akka.Persistence.EventStore;
 using Akka.Persistence.Journal;
 using EventStore.ClientAPI;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.Serialization.Formatters;
 using System.Text;
 using System.Threading.Tasks;
@@ -17,9 +19,11 @@ namespace Akka.Persistence.EventStore.Journal
 {
     public partial class EventStoreJournal : AsyncWriteJournal
     {
+        private const string MetaDataPropertyName = "Metadata";
         private int _batchSize = 500;
         private readonly Lazy<Task<IEventStoreConnection>> _connection;
-        private readonly JsonSerializerSettings _serializerSettings;
+        private readonly JsonSerializerSettings journalSerializerSettings;
+        private readonly JsonSerializerSettings metaDataSerializerSettings;
         private ILoggingAdapter _log;
         private readonly EventStorePersistenceExtension _extension;
 
@@ -28,15 +32,30 @@ namespace Akka.Persistence.EventStore.Journal
             _log = Context.GetLogger();
             _extension = EventStorePersistence.Instance.Apply(Context.System);
 
-            _serializerSettings = new JsonSerializerSettings
+            journalSerializerSettings = new JsonSerializerSettings
             {
-                TypeNameHandling = TypeNameHandling.Objects,
+                TypeNameHandling = TypeNameHandling.None, // TypeNameHandling.Objects,
                 TypeNameAssemblyFormat = FormatterAssemblyStyle.Simple,
                 Formatting = Formatting.Indented,
                 Converters =
                 {
                     new ActorRefConverter(Context)
-                }
+                },
+                ContractResolver = JournalDataDataContractResolver.Instance,
+                NullValueHandling = NullValueHandling.Ignore
+            };
+
+            metaDataSerializerSettings = new JsonSerializerSettings
+            {
+                TypeNameHandling = TypeNameHandling.None,
+                TypeNameAssemblyFormat = FormatterAssemblyStyle.Simple,
+                Formatting = Formatting.Indented,
+                Converters =
+                {
+                    new ActorRefConverter(Context)
+                },
+                //ContractResolver = MetaDataDataContractResolver.Instance,
+                NullValueHandling = NullValueHandling.Ignore
             };
 
             _connection = new Lazy<Task<IEventStoreConnection>>(async () =>
@@ -94,6 +113,7 @@ namespace Akka.Persistence.EventStore.Journal
         {
             try
             {
+                // see : https://geteventstore.com/blog/20130220/getting-started-part-2-implementing-the-commondomain-repository-interface/index.html
                 if (toSequenceNr < fromSequenceNr || max == 0) return;
                 if (fromSequenceNr == toSequenceNr) max = 1;
                 if (toSequenceNr > fromSequenceNr && max == toSequenceNr)
@@ -117,11 +137,27 @@ namespace Akka.Persistence.EventStore.Journal
                     }
                     slice = await connection.ReadStreamEventsForwardAsync(streamName, start, localBatchSize, false);
 
+                    //if (slice.Status == SliceReadStatus.StreamNotFound)
+                    //    throw new AggregateNotFoundException(id, typeof(TAggregate));
+
+                    //if (slice.Status == SliceReadStatus.StreamDeleted)
+                    //    throw new AggregateDeletedException(id, typeof(TAggregate));
+
                     foreach (var @event in slice.Events)
                     {
+                        IDictionary<string, object> metaDict = null;
+                        if (@event.OriginalEvent.Metadata?.Length > 0)
+                        {
+                            var meta = Encoding.UTF8.GetString(@event.OriginalEvent.Metadata);
+                            metaDict = JsonConvert.DeserializeObject<Dictionary<string, object>>(meta, metaDataSerializerSettings);
+                        }
+
                         var json = Encoding.UTF8.GetString(@event.OriginalEvent.Data);
-                        var representation = JsonConvert.DeserializeObject<JournalRepresentation>(json, _serializerSettings);
-                        recoveryCallback(ToPersistenceRepresentation(representation, context.Sender));
+                        journalSerializerSettings.ContractResolver = new PayloadContractResolver( Type.GetType((string)metaDict["payloadtype"]));
+                        var representation = JsonConvert.DeserializeObject<JournalRepresentation>(json, journalSerializerSettings);
+                        representation.SequenceNr = @event.OriginalEvent.EventNumber + 1;
+
+                        recoveryCallback(ToPersistenceRepresentation(representation, context.Sender, metaDict));
                         count++;
                         if (count == max) return;
                     }
@@ -186,24 +222,32 @@ namespace Akka.Persistence.EventStore.Journal
                                 string.Concat(streamName, x.SequenceNr)
                                 );
 
-                            // Converts using JSON Serializer
-                            var json = JsonConvert.SerializeObject(x, _serializerSettings);
-                            var data = Encoding.UTF8.GetBytes(json);
+                            
 
                             var meta = new byte[0];
                             var payload = x.Payload;
                             var payloadName = payload.GetType().Name;
 
-                            if (payload.GetType().GetProperty("Metadata") != null)
+                            var property = payload.GetType().GetProperty(MetaDataPropertyName, BindingFlags.Instance | BindingFlags.NonPublic);
+                            if (property != null)
                             {
-                                var propType = payload.GetType().GetProperty("Metadata").PropertyType;
+                                var propType = property.PropertyType;
+                                var metaData = property.GetValue(x.Payload) as IDictionary<string, object>;
+
+                                metaData["payloadtype"] = string.Format($"{payload.GetType().FullName}, {payload.GetType().Assembly.GetName().Name}");
+                                metaData["messagetype"] = string.Format($"{typeof(JournalRepresentation).FullName}, {typeof(JournalRepresentation).Assembly.GetName().Name}");
+
                                 var metaJson = JsonConvert.SerializeObject(
-                                    payload.GetType().GetProperty("Metadata").GetValue(x.Payload), 
-                                    propType, 
-                                    _serializerSettings);
+                                    metaData, 
+                                    propType,
+                                    metaDataSerializerSettings);
 
                                 meta = Encoding.UTF8.GetBytes(metaJson);
                             }
+
+                            // Converts message body using JSON Serializer
+                            var json = JsonConvert.SerializeObject(x, journalSerializerSettings);
+                            var data = Encoding.UTF8.GetBytes(json);
 
                             if (streamVersion == ExpectedVersion.NoStream)
                                 NotifyNewPersistenceIdAdded(grouping.Key);
@@ -214,6 +258,9 @@ namespace Akka.Persistence.EventStore.Journal
                         }).ToList();
 
                         var connection = await GetConnection();
+
+                        // See : Write paging
+                        // https://geteventstore.com/blog/20130220/getting-started-part-2-implementing-the-commondomain-repository-interface/index.html
                         await connection.AppendToStreamAsync(streamName, streamVersion, events);
                     }
 
@@ -233,13 +280,8 @@ namespace Akka.Persistence.EventStore.Journal
                     tasks => tasks.Select(t => t.IsFaulted ? TryUnwrapException(t.Exception) : null).ToImmutableList()
                 );
 
-
-            
-
             return result;
         }
-
-       
 
         /// <summary>
         /// Delete is not supported in Event Store
@@ -250,15 +292,19 @@ namespace Akka.Persistence.EventStore.Journal
         /// <returns></returns>
         protected override Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr)
         {
-            return Task.Delay(0);
+            //var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
+            //var connection = GetConnection().Result;
+            //return connection.DeleteStreamAsync(streamName, Convert.ToInt32(toSequenceNr));
+
+           return Task.Delay(0);
         }
 
         private static JournalRepresentation ToJournalEntry(IPersistentRepresentation message)
         {
             var jornalEntry = new JournalRepresentation
             {
-                Id = message.PersistenceId + "_" + message.SequenceNr,
-                IsDeleted = message.IsDeleted,
+                //Id = message.PersistenceId + "_" + message.SequenceNr,
+                //IsDeleted = message.IsDeleted,
                 Payload = message.Payload,
                 PersistenceId = message.PersistenceId,
                 SequenceNr = message.SequenceNr,
@@ -282,14 +328,28 @@ namespace Akka.Persistence.EventStore.Journal
             return jornalEntry;
         }
 
-        private Persistent ToPersistenceRepresentation(JournalRepresentation entry, IActorRef sender)
+        private Persistent ToPersistenceRepresentation(JournalRepresentation entry, IActorRef sender, IDictionary<string,object> metaData = null)
         {
+            var property = entry.Payload.GetType().GetProperty(MetaDataPropertyName, BindingFlags.Instance | BindingFlags.NonPublic);
+            if (property != null)
+            {
+                var meta = property.GetValue(entry.Payload) as IDictionary<string, object>;
+                if (meta != null && metaData != null)
+                {
+                    // Copy meta data
+                    foreach (var item in metaData)
+                    {
+                        meta[item.Key] = item.Value;
+                    }
+                }
+            }
+
             return new Persistent(
                 entry.Payload, 
                 entry.SequenceNr, 
                 entry.PersistenceId, 
                 entry.Manifest, 
-                entry.IsDeleted, 
+                false, //entry.IsDeleted, 
                 sender);
         }
 
@@ -319,6 +379,8 @@ namespace Akka.Persistence.EventStore.Journal
             }
         }
 
+
+        #region JSon Serialization
         class ActorRefConverter : JsonConverter
         {
             private readonly IActorContext _context;
@@ -355,6 +417,63 @@ namespace Akka.Persistence.EventStore.Journal
         }
 
 
-        
+        public class JournalDataDataContractResolver : DefaultContractResolver
+        {
+            public static readonly IContractResolver Instance = new JournalDataDataContractResolver();
+            protected override IList<JsonProperty> CreateProperties(Type type, MemberSerialization memberSerialization)
+            {
+                return base.CreateProperties(type, memberSerialization)
+                    .Where(p => p.PropertyName!=MetaDataPropertyName)
+                    .ToList();
+            }
+        }
+
+        public class PayloadContractResolver : JournalDataDataContractResolver
+        {
+            readonly Type PayloadType;
+
+            public PayloadContractResolver(Type payloadType)
+            {
+                PayloadType = payloadType;
+            }
+
+
+            protected override JsonProperty CreateProperty(MemberInfo member, MemberSerialization memberSerialization)
+            {
+                var property = base.CreateProperty(member, memberSerialization);
+
+                if (property.PropertyName.Equals("Payload", StringComparison.OrdinalIgnoreCase))
+                {
+                    property.PropertyType = PayloadType;
+                }
+
+                return property;
+            }
+        }
+
+
+        [Obsolete]
+        public class MetaDataDataContractResolver : DefaultContractResolver
+        {
+            public static readonly IContractResolver Instance = new MetaDataDataContractResolver();
+
+            protected override JsonProperty CreateProperty(MemberInfo member, MemberSerialization memberSerialization)
+            {
+                var property = base.CreateProperty(member, memberSerialization);
+
+                if (property.PropertyName.Equals("CorrelationId", StringComparison.OrdinalIgnoreCase))
+                {
+                    property.PropertyName = "$correlationid";
+                }
+
+                else if (property.PropertyName.Equals("CausationId", StringComparison.OrdinalIgnoreCase))
+                {
+                    property.PropertyName = "$causationid";
+                }
+
+                return property;
+            }
+        }
+        #endregion Json Serialization
     }
 }
