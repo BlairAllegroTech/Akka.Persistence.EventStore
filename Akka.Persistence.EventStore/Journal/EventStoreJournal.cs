@@ -20,6 +20,8 @@ namespace Akka.Persistence.EventStore.Journal
     public partial class EventStoreJournal : AsyncWriteJournal
     {
         private const string MetaDataPropertyName = "Metadata";
+        private const string MetaPayloadType = "payloadtype";
+        private const string JournalRepresentatioType = "messagetype";
         private int _batchSize = 500;
         private readonly Lazy<Task<IEventStoreConnection>> _connection;
         private readonly JsonSerializerSettings journalSerializerSettings;
@@ -32,15 +34,36 @@ namespace Akka.Persistence.EventStore.Journal
             _log = Context.GetLogger();
             _extension = EventStorePersistence.Instance.Apply(Context.System);
 
+            var journalConverters = new List<JsonConverter>();
+            foreach(var converterString in _extension.EventStoreJournalSettings.TypeConverterClasses)
+            {
+                var converterType = Type.GetType(converterString, false);
+                if (converterType == null)
+                {
+
+                }
+                else
+                {
+                    // Only try to create type converters
+                    if (typeof(JsonConverter).IsAssignableFrom(converterType))
+                    {
+                        var converter = Activator.CreateInstance(converterType) as JsonConverter;
+                        if (converter != null)
+                        {
+                            journalConverters.Add(converter);
+                        }
+                    }
+                }
+            }
+
+            journalConverters.Add(new ActorRefConverter(Context));
+
             journalSerializerSettings = new JsonSerializerSettings
             {
                 TypeNameHandling = TypeNameHandling.None, // TypeNameHandling.Objects,
                 TypeNameAssemblyFormat = FormatterAssemblyStyle.Simple,
                 Formatting = Formatting.Indented,
-                Converters =
-                {
-                    new ActorRefConverter(Context)
-                },
+                Converters = journalConverters,
                 ContractResolver = JournalDataDataContractResolver.Instance,
                 NullValueHandling = NullValueHandling.Ignore
             };
@@ -151,6 +174,10 @@ namespace Akka.Persistence.EventStore.Journal
                             var meta = Encoding.UTF8.GetString(@event.OriginalEvent.Metadata);
                             metaDict = JsonConvert.DeserializeObject<Dictionary<string, object>>(meta, metaDataSerializerSettings);
                         }
+                        else
+                        {
+                            metaDict = new Dictionary<string, object>();
+                        }
 
                         var json = Encoding.UTF8.GetString(@event.OriginalEvent.Data);
                         journalSerializerSettings.ContractResolver = new PayloadContractResolver( Type.GetType((string)metaDict["payloadtype"]));
@@ -224,26 +251,29 @@ namespace Akka.Persistence.EventStore.Journal
 
                             
 
-                            var meta = new byte[0];
                             var payload = x.Payload;
                             var payloadName = payload.GetType().Name;
 
+                            IDictionary<string, object> metaData = null;
                             var property = payload.GetType().GetProperty(MetaDataPropertyName, BindingFlags.Instance | BindingFlags.NonPublic);
                             if (property != null)
                             {
-                                var propType = property.PropertyType;
-                                var metaData = property.GetValue(x.Payload) as IDictionary<string, object>;
-
-                                metaData["payloadtype"] = string.Format($"{payload.GetType().FullName}, {payload.GetType().Assembly.GetName().Name}");
-                                metaData["messagetype"] = string.Format($"{typeof(JournalRepresentation).FullName}, {typeof(JournalRepresentation).Assembly.GetName().Name}");
-
-                                var metaJson = JsonConvert.SerializeObject(
-                                    metaData, 
-                                    propType,
-                                    metaDataSerializerSettings);
-
-                                meta = Encoding.UTF8.GetBytes(metaJson);
+                                metaData = property.GetValue(x.Payload) as IDictionary<string, object>;
                             }
+
+                            if (metaData == null)
+                                metaData = new Dictionary<string, object>();
+
+                            // Store message and payload data types in metta data
+                            metaData[MetaPayloadType] = string.Format($"{payload.GetType().FullName}, {payload.GetType().Assembly.GetName().Name}");
+                            metaData[JournalRepresentatioType] = string.Format($"{typeof(JournalRepresentation).FullName}, {typeof(JournalRepresentation).Assembly.GetName().Name}");
+
+                            var metaJson = JsonConvert.SerializeObject(
+                                metaData, 
+                                metaData.GetType(),
+                                metaDataSerializerSettings);
+
+                            var meta = Encoding.UTF8.GetBytes(metaJson);
 
                             // Converts message body using JSON Serializer
                             var json = JsonConvert.SerializeObject(x, journalSerializerSettings);
@@ -328,7 +358,7 @@ namespace Akka.Persistence.EventStore.Journal
             return jornalEntry;
         }
 
-        private Persistent ToPersistenceRepresentation(JournalRepresentation entry, IActorRef sender, IDictionary<string,object> metaData = null)
+        private Persistent ToPersistenceRepresentation(JournalRepresentation entry, IActorRef sender, IDictionary<string,object> metaData)
         {
             var property = entry.Payload.GetType().GetProperty(MetaDataPropertyName, BindingFlags.Instance | BindingFlags.NonPublic);
             if (property != null)

@@ -13,9 +13,11 @@ namespace Akka.Persistence.EventStore
     {
         public const string ConfigPath = "akka.persistence.journal.event-store";
 
+        public IEnumerable<string> TypeConverterClasses { get; private set; }
         public EventStoreJournalSettings(Config config)
             : base(config)
         {
+            TypeConverterClasses = config.GetStringList("json-type-converters");
         }
     }
 
