@@ -144,7 +144,7 @@ namespace Akka.Persistence.EventStore.Journal
 
                 var connection = await GetConnection();
                 long count = 0;
-                int start = ((int) fromSequenceNr-1);
+                var start = fromSequenceNr-1L;
                 var localBatchSize = _batchSize;
                 var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
                 StreamEventsSlice slice;
