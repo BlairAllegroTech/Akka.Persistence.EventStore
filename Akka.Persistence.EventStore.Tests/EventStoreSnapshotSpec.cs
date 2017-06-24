@@ -19,14 +19,14 @@
                 snapshot-store {
                     plugin = ""akka.persistence.snapshot-store.event-store""
                     event-store {
-                        class = ""EventStore.Persistence.EventStoreSnapshotStore, Akka.Persistence.EventStore""
+                        class = ""Akka.Persistence.EventStore.Snapshot.EventStoreSnapshotStore, Akka.Persistence.EventStore""
                         plugin-dispatcher = ""akka.actor.default-dispatcher""
                         
                         # the event store connection string
                         connection-string = ""ConnectTo=tcp://admin:changeit@127.0.0.1:1113;""
 
                         # name of the connection
-                        connection-name = ""akka.net""
+                        connection-name = ""akka.net-snapshot""
                     }
                 }
             }

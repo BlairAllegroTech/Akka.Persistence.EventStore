@@ -14,19 +14,21 @@
                 loggers = [""Akka.Logger.NLog.NLogLogger,Akka.Logger.NLog""]
 
                 persistence {
-
+                tenant-identifier = ""Test""
                 publish-plugin-commands = off
                 journal {
                     plugin = ""akka.persistence.journal.event-store""
                     event-store {
-                        class = ""EventStore.Persistence.EventStoreJournal, Akka.Persistence.EventStore""
+                        class = ""Akka.Persistence.EventStore.Journal.EventStoreJournal, Akka.Persistence.EventStore""
                         plugin-dispatcher = ""akka.actor.default-dispatcher""
                         
                         # the event store connection string
                         connection-string = ""ConnectTo=tcp://admin:changeit@127.0.0.1:1113;""
 
                         # name of the connection
-                        connection-name = ""akka.net""
+                        connection-name = ""akka.net-journal""
+
+                        json-type-converters = []
                     }
                 }
             }

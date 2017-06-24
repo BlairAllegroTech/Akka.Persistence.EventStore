@@ -1,7 +1,5 @@
 ﻿using Akka.Actor;
 using Akka.Event;
-using Akka.Persistence;
-using Akka.Persistence.EventStore;
 using Akka.Persistence.Journal;
 using EventStore.ClientAPI;
 using Newtonsoft.Json;
@@ -11,7 +9,6 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.Serialization.Formatters;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -61,7 +58,7 @@ namespace Akka.Persistence.EventStore.Journal
             journalSerializerSettings = new JsonSerializerSettings
             {
                 TypeNameHandling = TypeNameHandling.None, // TypeNameHandling.Objects,
-                TypeNameAssemblyFormat = FormatterAssemblyStyle.Simple,
+                TypeNameAssemblyFormatHandling = TypeNameAssemblyFormatHandling.Simple,
                 Formatting = Formatting.Indented,
                 Converters = journalConverters,
                 ContractResolver = JournalDataDataContractResolver.Instance,
@@ -71,7 +68,7 @@ namespace Akka.Persistence.EventStore.Journal
             metaDataSerializerSettings = new JsonSerializerSettings
             {
                 TypeNameHandling = TypeNameHandling.None,
-                TypeNameAssemblyFormat = FormatterAssemblyStyle.Simple,
+                TypeNameAssemblyFormatHandling =  TypeNameAssemblyFormatHandling.Simple,
                 Formatting = Formatting.Indented,
                 Converters =
                 {
@@ -85,7 +82,9 @@ namespace Akka.Persistence.EventStore.Journal
             {
                 try
                 {
-                    IEventStoreConnection connection = EventStoreConnection.Create(
+                    //var builder = ConnectionSettings.Create().Build();
+
+                    var connection = EventStoreConnection.Create(
                         _extension.EventStoreJournalSettings.ConnectionString, 
                         _extension.EventStoreJournalSettings.ConnectionName
                         );
@@ -111,17 +110,15 @@ namespace Akka.Persistence.EventStore.Journal
             {
                 var connection = await GetConnection();
 
-                // read last entry from event journal
-                var slice = await connection.ReadStreamEventsBackwardAsync(
-                    GetStreamName(persistenceId, _extension.TenantIdentifier), 
-                    StreamPosition.End, 
-                    1, 
-                    false);
+                long sequence = 0L;
+                var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
 
-                long sequence = 0;
+                var lastEvent = await connection.ReadEventAsync(streamName, StreamPosition.End, false);
 
-                if (slice.Events.Any())
-                    sequence = slice.Events.First().OriginalEventNumber + 1;
+                if (lastEvent?.Event.HasValue ?? false)
+                {
+                    sequence = lastEvent.Event.Value.OriginalEventNumber + 1L;
+                }
 
                 return sequence;
             }
@@ -144,7 +141,8 @@ namespace Akka.Persistence.EventStore.Journal
 
                 var connection = await GetConnection();
                 long count = 0;
-                var start = fromSequenceNr-1L;
+                //var start = fromSequenceNr-1L;
+                var start = fromSequenceNr;
                 var localBatchSize = _batchSize;
                 var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
                 StreamEventsSlice slice;
@@ -207,7 +205,7 @@ namespace Akka.Persistence.EventStore.Journal
                 try
                 {
                     // Journal entries grouped by aggregate
-                    var jornalEntries = ((IImmutableList<IPersistentRepresentation>)message.Payload)
+                    var journalEntries = ((IImmutableList<IPersistentRepresentation>)message.Payload)
                         .Select(ToJournalEntry)
                         .GroupBy(x => x.PersistenceId)
                         .ToList();
@@ -215,7 +213,7 @@ namespace Akka.Persistence.EventStore.Journal
 
                     // TODO : if there are more than one gropuing then we should use a transaction to write
                     // to ensure messages writen atomically
-                    var transactionRequired = jornalEntries.Count() > 1;
+                    var transactionRequired = journalEntries.Count() > 1;
 
                     if (transactionRequired)
                     {
@@ -226,7 +224,7 @@ namespace Akka.Persistence.EventStore.Journal
 
                     
 
-                    foreach (var grouping in jornalEntries)
+                    foreach (var grouping in journalEntries)
                     {
                         var streamName = GetStreamName(grouping.Key, _extension.TenantIdentifier);
 
@@ -268,16 +266,25 @@ namespace Akka.Persistence.EventStore.Journal
                             metaData[MetaPayloadType] = string.Format($"{payload.GetType().FullName}, {payload.GetType().Assembly.GetName().Name}");
                             metaData[JournalRepresentatioType] = string.Format($"{typeof(JournalRepresentation).FullName}, {typeof(JournalRepresentation).Assembly.GetName().Name}");
 
-                            var metaJson = JsonConvert.SerializeObject(
-                                metaData, 
-                                metaData.GetType(),
-                                metaDataSerializerSettings);
+                            byte[] meta = null, data = null;
+                            try
+                            {
+                                var metaJson = JsonConvert.SerializeObject(
+                                    metaData,
+                                    metaData.GetType(),
+                                    metaDataSerializerSettings);
 
-                            var meta = Encoding.UTF8.GetBytes(metaJson);
+                                // Converts message body using JSON Serializer
+                                var json = JsonConvert.SerializeObject(x, journalSerializerSettings);
 
-                            // Converts message body using JSON Serializer
-                            var json = JsonConvert.SerializeObject(x, journalSerializerSettings);
-                            var data = Encoding.UTF8.GetBytes(json);
+                                meta = Encoding.UTF8.GetBytes(metaJson);
+                                data = Encoding.UTF8.GetBytes(json);
+                            }
+                            catch(Exception ex)
+                            {
+                                _log.Error(ex, "Failed to serialize Jornal Message");
+                                throw;
+                            }
 
                             if (streamVersion == ExpectedVersion.NoStream)
                                 NotifyNewPersistenceIdAdded(grouping.Key);
@@ -294,7 +301,7 @@ namespace Akka.Persistence.EventStore.Journal
                         await connection.AppendToStreamAsync(streamName, streamVersion, events);
                     }
 
-                    OnAfterJournalEventsPersisted(persistenceIds: jornalEntries.Select(e => e.Key));
+                    OnAfterJournalEventsPersisted(persistenceIds: journalEntries.Select(e => e.Key));
                 }
                 catch (Exception e)
                 {
@@ -307,7 +314,10 @@ namespace Akka.Persistence.EventStore.Journal
                 .Factory
                 .ContinueWhenAll(
                     writeTasks.ToArray(), 
-                    tasks => tasks.Select(t => t.IsFaulted ? TryUnwrapException(t.Exception) : null).ToImmutableList()
+                    tasks => tasks?.Select(t => 
+                    {
+                        return t.IsFaulted ? TryUnwrapException(t.Exception) : null;
+                    }).ToImmutableList()
                 );
 
             return result;
@@ -322,10 +332,11 @@ namespace Akka.Persistence.EventStore.Journal
         /// <returns></returns>
         protected override Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr)
         {
-            //var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
-            //var connection = GetConnection().Result;
-            //return connection.DeleteStreamAsync(streamName, Convert.ToInt32(toSequenceNr));
+            var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
+            var connection = GetConnection().Result;
+            return connection.DeleteStreamAsync(streamName, Convert.ToInt32(toSequenceNr));
 
+            
            return Task.Delay(0);
         }
 
