@@ -2,7 +2,7 @@
 {
     using Configuration;
     using System.Configuration;
-    using TestKit.Snapshot;
+    using TCK.Snapshot;
 
 
     public partial class EventStoreSnapshotSpec : SnapshotStoreSpec

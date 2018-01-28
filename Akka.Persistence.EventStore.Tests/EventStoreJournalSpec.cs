@@ -1,9 +1,8 @@
 ﻿namespace Akka.Persistence.EventStore.Tests
 {
     using Configuration;
-    using Configuration.Hocon;
     using System.Configuration;
-    using TestKit.Journal;
+    using TCK.Journal;
 
     public partial class EventStoreJournalSpec : JournalSpec
     {
