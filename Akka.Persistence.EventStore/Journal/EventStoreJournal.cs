@@ -19,6 +19,7 @@ namespace Akka.Persistence.EventStore.Journal
         private const string MetaDataPropertyName = "Metadata";
         private const string MetaPayloadType = "payloadtype";
         private const string JournalRepresentatioType = "messagetype";
+        private const string IsDeletedEvent = "isDeleted";
         private int _batchSize = 500;
         private readonly Lazy<Task<IEventStoreConnection>> _connection;
         private readonly JsonSerializerSettings journalSerializerSettings;
@@ -117,7 +118,8 @@ namespace Akka.Persistence.EventStore.Journal
 
                 if (lastEvent?.Event.HasValue ?? false)
                 {
-                    sequence = lastEvent.Event.Value.OriginalEventNumber + 1L;
+                    //sequence = lastEvent.Event.Value.OriginalEventNumber + 1L;
+                    sequence = lastEvent.Event.Value.OriginalEventNumber;
                 }
 
                 return sequence;
@@ -141,13 +143,14 @@ namespace Akka.Persistence.EventStore.Journal
 
                 var connection = await GetConnection();
                 long count = 0;
-                //var start = fromSequenceNr-1L;
-                var start = fromSequenceNr;
-                var localBatchSize = _batchSize;
+                
+                // Eventstore sequences starts at 0 Akka starts at 1.
+                var start = fromSequenceNr-1L;
                 var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
                 StreamEventsSlice slice;
                 do
                 {
+                    var localBatchSize = _batchSize;
                     if (max == long.MaxValue && toSequenceNr > fromSequenceNr)
                     {
                         max = toSequenceNr - fromSequenceNr + 1;
@@ -230,7 +233,7 @@ namespace Akka.Persistence.EventStore.Journal
 
                         var representations = grouping.OrderBy(x => x.SequenceNr).ToArray();
 
-                        // Eventstore sequences start at 0 Akka starts a 1.
+                        // Eventstore sequences starts at 0 Akka starts at 1.
                         // Expected version is one less than the version of the first item, minus one more to account for the 
                         // Zero based ndexing
                         var eventStoreVersion = (int)(representations.First().SequenceNr - 1L);
@@ -265,6 +268,7 @@ namespace Akka.Persistence.EventStore.Journal
                             // Store message and payload data types in metta data
                             metaData[MetaPayloadType] = string.Format($"{payload.GetType().FullName}, {payload.GetType().Assembly.GetName().Name}");
                             metaData[JournalRepresentatioType] = string.Format($"{typeof(JournalRepresentation).FullName}, {typeof(JournalRepresentation).Assembly.GetName().Name}");
+                            metaData[IsDeletedEvent] = false;
 
                             byte[] meta = null, data = null;
                             try
@@ -330,14 +334,23 @@ namespace Akka.Persistence.EventStore.Journal
         /// <param name="toSequenceNr"></param>
         /// <param name="isPermanent"></param>
         /// <returns></returns>
-        protected override Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr)
+        protected override async Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr)
         {
+            var eventStoreSequenceNo = toSequenceNr - 1L;
             var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
             var connection = GetConnection().Result;
-            return connection.DeleteStreamAsync(streamName, Convert.ToInt32(toSequenceNr));
 
-            
-           return Task.Delay(0);
+            var sourceMetaData = await connection.GetStreamMetadataAsync(streamName);
+            if ((sourceMetaData.StreamMetadata.TruncateBefore ?? 0L) < eventStoreSequenceNo)
+            {
+                var targetMetaData = sourceMetaData.StreamMetadata.Copy();
+                targetMetaData.SetTruncateBefore(eventStoreSequenceNo);
+                await connection.SetStreamMetadataAsync(streamName, sourceMetaData.MetastreamVersion, targetMetaData);
+            }
+            else
+            {
+                await Task.CompletedTask;
+            }
         }
 
         private static JournalRepresentation ToJournalEntry(IPersistentRepresentation message)
@@ -371,6 +384,7 @@ namespace Akka.Persistence.EventStore.Journal
 
         private Persistent ToPersistenceRepresentation(JournalRepresentation entry, IActorRef sender, IDictionary<string,object> metaData)
         {
+            var isDeleted = false;
             var property = entry.Payload.GetType().GetProperty(MetaDataPropertyName, BindingFlags.Instance | BindingFlags.NonPublic);
             if (property != null)
             {
@@ -381,6 +395,11 @@ namespace Akka.Persistence.EventStore.Journal
                     foreach (var item in metaData)
                     {
                         meta[item.Key] = item.Value;
+                        if(item.Key == IsDeletedEvent)
+                        {
+                            if (!bool.TryParse(item.Value.ToString(), out isDeleted))
+                                isDeleted = false;
+                        }
                     }
                 }
             }
@@ -389,8 +408,8 @@ namespace Akka.Persistence.EventStore.Journal
                 entry.Payload, 
                 entry.SequenceNr, 
                 entry.PersistenceId, 
-                entry.Manifest, 
-                false, //entry.IsDeleted, 
+                entry.Manifest,
+                isDeleted, 
                 sender);
         }
 
