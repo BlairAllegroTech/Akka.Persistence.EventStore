@@ -1,11 +1,14 @@
 ﻿namespace Akka.Persistence.EventStore.Tests
 {
     using Configuration;
+    using System;
     using System.Configuration;
+    using System.Net.Http;
     using TCK.Journal;
 
     public partial class EventStoreJournalSpec : JournalSpec
     {
+        readonly HttpClient client;
         private static readonly Config SpecConfig = ConfigurationFactory.ParseString(@"
             akka {
                 stdout-loglevel = DEBUG
@@ -55,10 +58,25 @@
         public EventStoreJournalSpec()
             : base(CustomConfig(), "EventStoreJournalSpec")
         {
+            var uriBuilder = new UriBuilder(ConfigurationManager.AppSettings["es.client"]);
+            client = new HttpClient();
+            client.BaseAddress = uriBuilder.Uri;
+            client.DefaultRequestHeaders.Add("Accept", "application/json");
+
             Initialize();
         }
 
-        
+        protected override void PreparePersistenceId(string pid)
+        {
+            var relativeUrl = $"/streams/Test_journal-{pid}";
+            var success = client.GetAsync(relativeUrl).Result;
+            if (success.StatusCode == System.Net.HttpStatusCode.OK)
+            {
+                // var result = client.DeleteAsync(relativeUrl).Result;
+            }
+
+            base.PreparePersistenceId(pid);
+        }
 
         protected override void Dispose(bool disposing)
         {
