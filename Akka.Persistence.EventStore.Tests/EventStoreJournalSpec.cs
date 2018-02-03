@@ -17,7 +17,7 @@
 
                 persistence {
                 tenant-identifier = ""Test""
-                publish-plugin-commands = off
+                publish-plugin-commands = on
                 journal {
                     plugin = ""akka.persistence.journal.event-store""
                     event-store {

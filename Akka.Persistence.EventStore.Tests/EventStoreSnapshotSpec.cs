@@ -15,7 +15,7 @@
 
                 persistence {
 
-                publish-plugin-commands = off
+                publish-plugin-commands = on
                 snapshot-store {
                     plugin = ""akka.persistence.snapshot-store.event-store""
                     event-store {
