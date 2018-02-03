@@ -27,6 +27,7 @@ namespace Akka.Persistence.EventStore.Journal
         private ILoggingAdapter _log;
         private readonly EventStorePersistenceExtension _extension;
 
+
         public EventStoreJournal()
         {
             _log = Context.GetLogger();
@@ -113,11 +114,11 @@ namespace Akka.Persistence.EventStore.Journal
         /// <returns></returns>
         public override Task<long> ReadHighestSequenceNrAsync(string persistenceId, long fromSequenceNr)
         {
-            return Internal_ReadHighestSequenceNrAsync(persistenceId, fromSequenceNr)
+            return Internal_ReadHighestSequenceNrAsync(persistenceId)
                 .ContinueWith(t => { return t.Result + 1L; });
         }
 
-        protected async Task<long> Internal_ReadHighestSequenceNrAsync(string persistenceId, long fromSequenceNr)
+        protected async Task<long> Internal_ReadHighestSequenceNrAsync(string persistenceId)
         { 
             try
             {
@@ -148,7 +149,9 @@ namespace Akka.Persistence.EventStore.Journal
             {
                 // see : https://geteventstore.com/blog/20130220/getting-started-part-2-implementing-the-commondomain-repository-interface/index.html
                 if (toSequenceNr < fromSequenceNr || max == 0) return;
+
                 if (fromSequenceNr == toSequenceNr) max = 1;
+
                 if (toSequenceNr > fromSequenceNr && max == toSequenceNr)
                     max = toSequenceNr - fromSequenceNr + 1;
 
@@ -156,7 +159,8 @@ namespace Akka.Persistence.EventStore.Journal
                 long count = 0;
                 
                 // Eventstore sequences starts at 0 Akka starts at 1.
-                var start = fromSequenceNr-1L;
+                // But Akka sends 0 for a new stream
+                var start = fromSequenceNr > 0 ? fromSequenceNr - 1L : 0L;
                 var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
                 StreamEventsSlice slice;
                 do
@@ -345,6 +349,7 @@ namespace Akka.Persistence.EventStore.Journal
             return result;
         }
 
+
         /// <summary>
         /// Delete is not supported in Event Store
         /// </summary>
@@ -355,7 +360,7 @@ namespace Akka.Persistence.EventStore.Journal
         protected override async Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr)
         {
             // Do not subtract 1 as the command is truncate before
-            var eventStoreBeforeSequenceNo = toSequenceNr;
+            var eventStoreBeforeSequenceNo = Math.Min(toSequenceNr, await Internal_ReadHighestSequenceNrAsync(persistenceId)+1L);
             var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
             var connection = GetConnection().Result;
 
