@@ -105,20 +105,31 @@ namespace Akka.Persistence.EventStore.Journal
             return _connection.Value;
         }
 
-        public override async Task<long> ReadHighestSequenceNrAsync(string persistenceId, long fromSequenceNr)
+        /// <summary>
+        /// Convert from EventStore 0 based indexes to Akka 1 based index
+        /// </summary>
+        /// <param name="persistenceId"></param>
+        /// <param name="fromSequenceNr"></param>
+        /// <returns></returns>
+        public override Task<long> ReadHighestSequenceNrAsync(string persistenceId, long fromSequenceNr)
         {
+            return Internal_ReadHighestSequenceNrAsync(persistenceId, fromSequenceNr)
+                .ContinueWith(t => { return t.Result + 1L; });
+        }
+
+        protected async Task<long> Internal_ReadHighestSequenceNrAsync(string persistenceId, long fromSequenceNr)
+        { 
             try
             {
                 var connection = await GetConnection();
 
-                long sequence = 0L;
+                long sequence = -1L;
                 var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
 
                 var lastEvent = await connection.ReadEventAsync(streamName, StreamPosition.End, false);
 
                 if (lastEvent?.Event.HasValue ?? false)
                 {
-                    //sequence = lastEvent.Event.Value.OriginalEventNumber + 1L;
                     sequence = lastEvent.Event.Value.OriginalEventNumber;
                 }
 
@@ -235,13 +246,13 @@ namespace Akka.Persistence.EventStore.Journal
 
                         // Eventstore sequences starts at 0 Akka starts at 1.
                         // Expected version is one less than the version of the first item, minus one more to account for the 
-                        // Zero based ndexing
-                        var eventStoreVersion = (int)(representations.First().SequenceNr - 1L);
+                        // Zero based indexing
+                        var firstEventVersion = representations.First().SequenceNr - 1L;
 
                         // If Version is 0 then then we are creating a new stream!!
-                        var streamVersion = eventStoreVersion < 1 ? 
+                        var streamVersion = firstEventVersion < 1L ? 
                             ExpectedVersion.NoStream : // this is a new stream
-                            (eventStoreVersion - 1);   // Our event should have a version one larger than the current stream version
+                            (firstEventVersion-1);     // Our event should have a version one larger than the current stream version
 
                         var events = representations.Select(x =>
                         {
@@ -286,7 +297,7 @@ namespace Akka.Persistence.EventStore.Journal
                             }
                             catch(Exception ex)
                             {
-                                _log.Error(ex, "Failed to serialize Jornal Message");
+                                _log.Error(ex, "Failed to serialize Journal Message");
                                 throw;
                             }
 
@@ -309,7 +320,14 @@ namespace Akka.Persistence.EventStore.Journal
                 }
                 catch (Exception e)
                 {
-                    _log.Error(e, "Error writing messages to store");
+                    if (e is global::EventStore.ClientAPI.Exceptions.EventStoreConnectionException)
+                    {
+                        _log.Error(e, "EventStore Error writing messages to store");
+                    }
+                    else
+                    {
+                        _log.Error(e, "Unexpected Error writing messages to store");
+                    }
                     throw;
                 }
             });
@@ -336,15 +354,16 @@ namespace Akka.Persistence.EventStore.Journal
         /// <returns></returns>
         protected override async Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr)
         {
-            var eventStoreSequenceNo = toSequenceNr - 1L;
+            // Do not subtract 1 as the command is truncate before
+            var eventStoreBeforeSequenceNo = toSequenceNr;
             var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
             var connection = GetConnection().Result;
 
             var sourceMetaData = await connection.GetStreamMetadataAsync(streamName);
-            if ((sourceMetaData.StreamMetadata.TruncateBefore ?? 0L) < eventStoreSequenceNo)
+            if ((sourceMetaData.StreamMetadata.TruncateBefore ?? 0L) < eventStoreBeforeSequenceNo)
             {
                 var targetMetaData = sourceMetaData.StreamMetadata.Copy();
-                targetMetaData.SetTruncateBefore(eventStoreSequenceNo);
+                targetMetaData.SetTruncateBefore(eventStoreBeforeSequenceNo);
                 await connection.SetStreamMetadataAsync(streamName, sourceMetaData.MetastreamVersion, targetMetaData);
             }
             else
