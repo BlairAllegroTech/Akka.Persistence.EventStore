@@ -1,6 +1,7 @@
 ﻿namespace Akka.Persistence.EventStore.Tests
 {
     using Configuration;
+    using System;
     using System.Configuration;
     using TCK.Snapshot;
 
@@ -23,7 +24,7 @@
                         plugin-dispatcher = ""akka.actor.default-dispatcher""
                         
                         # the event store connection string
-                        connection-string = ""ConnectTo=tcp://admin:changeit@127.0.0.1:1113;""
+                        #connection-string = ""ConnectTo=tcp://admin:changeit@127.0.0.1:1113;""
 
                         # name of the connection
                         connection-name = ""akka.net-snapshot""
@@ -49,9 +50,13 @@
             else
             {
                 // Override connection string
-                var config = ConfigurationFactory.ParseString(
-                       string.Format(@"akka.persistence.snapshot-store.event-store.connection-string=""{0}"" ", customEventStoreConnection)
-                       ).WithFallback(SpecConfig);
+                var config = SpecConfig
+                   .WithFallback(ConfigurationFactory.ParseString(
+                      string.Format(@"akka.persistence.snapshot-store.event-store.connection-string=""{0}"" ", customEventStoreConnection)
+                      ))
+                   .WithFallback(ConfigurationFactory.ParseString(
+                      string.Format(@"akka.persistence.tenant-identifier=""{0}"" ", Guid.NewGuid())
+                      ));
 
                 return config;
             }

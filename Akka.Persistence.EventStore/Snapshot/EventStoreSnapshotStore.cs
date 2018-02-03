@@ -43,7 +43,6 @@ namespace Akka.Persistence.EventStore.Snapshot
             });
         }
 
-
         private Task<IEventStoreConnection> GetConnection()
         {
             return _connection.Value;
@@ -54,8 +53,6 @@ namespace Akka.Persistence.EventStore.Snapshot
             var connection = await GetConnection();
             var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
 
-            
-
             try
             {
                 if (SnapshotSelectionCriteria.None.Equals(criteria))
@@ -63,55 +60,10 @@ namespace Akka.Persistence.EventStore.Snapshot
                     return null;
                 }
 
-                var from = criteria.MaxSequenceNr == long.MaxValue ? StreamPosition.End : criteria.MaxSequenceNr-1;
-
-                while (true)
-                {
-                    // Always just read last snapshot, theres no point trying to read old snapshots..
-                    // Also here 'criteria.MaxSequenceNr' has no relationship to the position in the event stream, this was a BUG!
-                    var latestSnapshot = await connection.ReadEventAsync(streamName, from, false);
-
-                    if (latestSnapshot.Status != EventReadStatus.Success)
-                    {
-                        _log.Debug("No snapshot found for: {0}", persistenceId);
-                        return null;
-                    }
-                    else
-                    {
-                        _log.Debug("Found snapshot of {0}", persistenceId);
-                        var @event = latestSnapshot.Event.Value.Event;
-
-                        if (criteria.MinSequenceNr != 0)
-                        {
-                            if (latestSnapshot.EventNumber < criteria.MinSequenceNr)
-                                return null;
-                        }
-
-                        //var created = latestSnapshot.Event.Value.Event.Created;
-                        var representation = (SnapshotRepresentation)_serializer.FromBinary(@event.Data, typeof(SnapshotRepresentation));
-                        var result = ToSelectedSnapshot(representation);
-
-                        if (criteria.MinTimestamp.HasValue)
-                        {
-                            if (result.Metadata.Timestamp < criteria.MinTimestamp.Value)
-                            {
-                                return null;
-                            }
-                        }
-
-                        if (result.Metadata.Timestamp <= criteria.MaxTimeStamp)
-                        {
-                            return result;
-                        }
-                        else
-                        {
-                            // Read the next event
-                            from = latestSnapshot.Event.Value.OriginalEventNumber - 1;
-                        }
-                    }
-                }
+                var result = await FindSnapshotEvent(persistenceId, streamName, connection, criteria);
+                return result?.snapshot;
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 _log.Error($"Failed to read Last Stream message from stream {streamName}", ex);
                 throw;
@@ -144,17 +96,72 @@ namespace Akka.Persistence.EventStore.Snapshot
             var data = _serializer.ToBinary(ToSnapshotEntry(metadata, snapshot));
             var eventData = new EventData(Guid.NewGuid(), typeof(SnapshotRepresentation).Name, false, data, new byte[0]);
 
+            _log.Debug($"Saving Snap Shot {streamName}");
             await connection.AppendToStreamAsync(streamName, ExpectedVersion.Any, eventData);
+            await Task.CompletedTask;
         }
 
         /// <summary>
         /// Delete a single snapshot identified by PersistenceId and Sequence Number
+        /// NOTE : We can't do this with ES, do delete all snapshots prior
         /// </summary>
         /// <param name="metadata"></param>
         /// <returns>A task to be executed</returns>
-        protected override Task DeleteAsync(SnapshotMetadata metadata)
+        protected override async Task DeleteAsync(SnapshotMetadata metadata)
         {
-            return Task.CompletedTask;
+            {
+                var connection = await GetConnection();
+                var persistenceId = metadata.PersistenceId;
+                var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
+
+                try
+                {
+                    var currentPosition = (long)StreamPosition.End;
+                    while (true)
+                    {
+                        var latestSnapshot = await connection.ReadEventAsync(streamName, currentPosition, false);
+
+                        if (latestSnapshot.Status != EventReadStatus.Success)
+                        {
+                            _log.Debug("No snapshot found for: {0}", persistenceId);
+                            break;
+                        }
+                        else
+                        {
+                            _log.Debug("Found snapshot of {0}", persistenceId);
+                            var @event = latestSnapshot.Event.Value.Event;
+
+                            var representation = (SnapshotRepresentation)_serializer.FromBinary(@event.Data, typeof(SnapshotRepresentation));
+                            var result = ToSelectedSnapshot(representation);
+
+                            if (result.Metadata.SequenceNr == metadata.SequenceNr)
+                            {
+                                // TODO : Delete
+                                await TruncateStreamBeforeSequenceNumber(persistenceId, currentPosition);
+                                break;
+                            }
+
+                            if (result.Metadata.SequenceNr < metadata.SequenceNr)
+                            {
+                                break;
+                            }
+                            else
+                            {
+                                // Read the next event
+                                currentPosition = latestSnapshot.Event.Value.OriginalEventNumber - 1L;
+                                if (currentPosition < 1)
+                                    break;
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Error($"Failed to read Last Stream message from stream {streamName}", ex);
+                    throw;
+                }
+
+            }
         }
 
         /// <summary>
@@ -165,8 +172,22 @@ namespace Akka.Persistence.EventStore.Snapshot
         /// <returns></returns>
         protected override async Task DeleteAsync(string persistenceId, SnapshotSelectionCriteria criteria)
         {
-            //await TruncateStreamBeforeSequenceNumberAsync(persistenceId, criteria.MaxSequenceNr);
-            await Task.CompletedTask;
+            var connection = await GetConnection();
+            var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
+            try
+            {
+                long streamOffset;
+                var result = await FindSnapshotEvent(persistenceId, streamName, connection, criteria);
+                if (result.HasValue)
+                {
+                    await TruncateStreamBeforeSequenceNumberAsync(persistenceId, result.Value.streamOffset);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Error($"DeleteAsync Failed stream:{streamName}", ex);
+                throw;
+            }
         }
 
         private static SnapshotRepresentation ToSnapshotEntry(SnapshotMetadata metadata, object snapshot)
@@ -189,13 +210,92 @@ namespace Akka.Persistence.EventStore.Snapshot
                 );
         }
 
+        struct SnapShotSearchSearch
+        {
+            public SelectedSnapshot snapshot;
+            public long streamOffset;
+        }
+        private async Task<SnapShotSearchSearch?> FindSnapshotEvent(string persistenceId, string streamName, IEventStoreConnection connection, SnapshotSelectionCriteria criteria)
+        {
+            if (SnapshotSelectionCriteria.Latest.Equals(criteria))
+            {
+                // Always just read last snapshot, theres no point trying to read old snapshots..
+                // Also here 'criteria.MaxSequenceNr' has no relationship to the position in the event stream, this was a BUG!
+                var latestSnapshot = await connection.ReadEventAsync(streamName, StreamPosition.End, false);
 
+                if (latestSnapshot.Status != EventReadStatus.Success)
+                {
+                    _log.Debug("No snapshot found for: {0}", persistenceId);
+                    return null;
+                }
+                var @event = latestSnapshot.Event.Value.Event;
+                var representation = (SnapshotRepresentation)_serializer.FromBinary(@event.Data, typeof(SnapshotRepresentation));
 
-        private Task TruncateStreamBeforeSequenceNumber(string persistenceId, long maxSequenceNumber)
+                return new SnapShotSearchSearch {
+                    snapshot = ToSelectedSnapshot(representation),
+                    streamOffset = latestSnapshot.Event.Value.OriginalEventNumber,
+                };
+            }
+            else
+            {
+
+                var currentPosition = (long)StreamPosition.End;
+                while (true)
+                {
+                    // Always just read last snapshot, theres no point trying to read old snapshots..
+                    // Also here 'criteria.MaxSequenceNr' has no relationship to the position in the event stream, this was a BUG!
+                    var latestSnapshot = await connection.ReadEventAsync(streamName, currentPosition, false);
+
+                    if (latestSnapshot.Status != EventReadStatus.Success)
+                    {
+                        _log.Debug("No snapshot found for: {0}", persistenceId);
+                        break;
+                    }
+                    else
+                    {
+                        _log.Debug("Found snapshot of {0}", persistenceId);
+                        var @event = latestSnapshot.Event.Value.Event;
+
+                        var representation = (SnapshotRepresentation)_serializer.FromBinary(@event.Data, typeof(SnapshotRepresentation));
+                        var result = ToSelectedSnapshot(representation);
+
+                        if (result.Metadata.SequenceNr < criteria.MinSequenceNr)
+                            break;
+
+                        if (criteria.MinTimestamp.HasValue)
+                        {
+                            if (result.Metadata.Timestamp < criteria.MinTimestamp.Value)
+                            {
+                                break;
+                            }
+                        }
+
+                        if (result.Metadata.SequenceNr <= criteria.MaxSequenceNr && result.Metadata.Timestamp <= criteria.MaxTimeStamp)
+                        {
+                            return new SnapShotSearchSearch
+                            {
+                                snapshot = ToSelectedSnapshot(representation),
+                                streamOffset = currentPosition,
+                            };
+                        }
+                        else
+                        {
+                            // Read the next event
+                            currentPosition = latestSnapshot.Event.Value.OriginalEventNumber - 1L;
+                            if (currentPosition < 1)
+                                break;
+                        }
+                    }
+                }
+
+                return null;
+            }
+        }
+        private async Task TruncateStreamBeforeSequenceNumber(string persistenceId, long maxSequenceNumber)
         {
             var streamName = GetStreamName(persistenceId, _extension.TenantIdentifier);
 
-            var task = GetConnection().ContinueWith((Task<IEventStoreConnection> getConnection) =>
+            await GetConnection().ContinueWith((Task<IEventStoreConnection> getConnection) =>
             {
                 var connection = getConnection.Result;
 
@@ -220,8 +320,6 @@ namespace Akka.Persistence.EventStore.Snapshot
                     }, TaskContinuationOptions.None);
 
             }, TaskContinuationOptions.None);
-
-            return task;
         }
 
         private async Task<WriteResult> TruncateStreamBeforeSequenceNumberAsync(string persistenceId, long maxSequenceNumber)
