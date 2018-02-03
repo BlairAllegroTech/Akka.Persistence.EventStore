@@ -282,7 +282,7 @@ namespace Akka.Persistence.EventStore.Snapshot
                         {
                             // Read the next event
                             currentPosition = latestSnapshot.Event.Value.OriginalEventNumber - 1L;
-                            if (currentPosition < 1)
+                            if (currentPosition < 1L)
                                 break;
                         }
                     }
